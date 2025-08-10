@@ -1,8 +1,7 @@
-python: "3.11"
 streamlit
 numpy
 opencv-python-headless
 scikit-learn
 joblib
 Pillow
-tensorflow==2.15.0
+tensorflow==2.13.0
