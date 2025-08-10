@@ -1,98 +1,82 @@
 import os
 import cv2
 import numpy as np
-from skimage.feature import hog
+import tensorflow as tf
 from sklearn.model_selection import train_test_split
-from sklearn.linear_model import SGDClassifier  # <-- Using the FAST classifier
-from sklearn.metrics import accuracy_score, classification_report
+from sklearn.linear_model import LogisticRegression # A simple, fast classifier is enough now
+from sklearn.metrics import accuracy_score
 import joblib
 
-# --- 1. Function to Load a LIMITED sample of Images for SPEED ---
-def load_images_from_folders(main_folder_path, max_images_per_class=1000):
-    """
-    Loads a limited number of images from subfolders for FASTER training.
-    """
+# --- 1. Load the Pre-trained Deep Learning Model (MobileNetV2) ---
+# We use the 'include_top=False' to remove the final classification layer,
+# so we can use the model for feature extraction.
+base_model = tf.keras.applications.MobileNetV2(input_shape=(224, 224, 3),
+                                               include_top=False,
+                                               weights='imagenet')
+base_model.trainable = False # We freeze the model's weights
+
+# --- 2. Function to Load and Preprocess Images ---
+def load_and_preprocess_images(folder_path, max_images_per_class=1000):
     images = []
     labels = []
-    print(f"Starting to load a limited sample of {max_images_per_class} images per class...")
-    
-    for label_folder in ["Cat", "Dog"]:
-        folder_path = os.path.join(main_folder_path, label_folder)
-        if not os.path.isdir(folder_path):
-            print(f"Warning: Folder '{folder_path}' not found. Skipping.")
-            continue
+    print(f"Loading a sample of {max_images_per_class} images per class...")
+    for label in ["Cat", "Dog"]:
+        class_path = os.path.join(folder_path, label)
+        if not os.path.isdir(class_path): continue
         
-        image_count = 0
-        for image_file in os.listdir(folder_path):
-            if image_count >= max_images_per_class:
-                break # Stop once we have enough images for this class
+        count = 0
+        for filename in os.listdir(class_path):
+            if count >= max_images_per_class: break
             
-            image_path = os.path.join(folder_path, image_file)
-            image = cv2.imread(image_path)
-            if image is not None:
-                images.append(image)
-                labels.append(label_folder)
-                image_count += 1
+            img_path = os.path.join(class_path, filename)
+            img = cv2.imread(img_path)
+            if img is not None:
+                # Preprocess for MobileNetV2: resize to 224x224 and use its specific function
+                img = cv2.resize(img, (224, 224))
+                img_preprocessed = tf.keras.applications.mobilenet_v2.preprocess_input(img)
+                images.append(img_preprocessed)
+                labels.append(label)
+                count += 1
+    
+    print(f"Loaded and preprocessed {len(images)} images.")
+    return np.array(images), np.array(labels)
 
-    print(f"Finished loading sample. Found {len(images)} images in total.")
-    return images, labels
-
-# --- 2. Function for Preprocessing and Feature Extraction ---
-def preprocess_and_extract_features(images):
-    """
-    Resizes images, converts to grayscale, and extracts HOG features.
-    """
-    features = []
-    total_images = len(images)
-    print(f"Starting feature extraction from {total_images} images...")
-    for i, image in enumerate(images):
-        if (i + 1) % 100 == 0 or (i + 1) == total_images:
-            print(f"  Processing image {i + 1}/{total_images}")
-        resized_image = cv2.resize(image, (64, 128))
-        gray_image = cv2.cvtColor(resized_image, cv2.COLOR_BGR2GRAY)
-        hog_features = hog(gray_image, orientations=9, pixels_per_cell=(8, 8),
-                           cells_per_block=(2, 2), block_norm='L2-Hys', visualize=False)
-        features.append(hog_features)
-    print("Feature extraction finished.")
-    return np.array(features)
-
-# --- 3. Main Script Execution ---
+# --- 3. Main Script ---
 if __name__ == "__main__":
     dataset_path = 'PetImages'
     
-    # --- Step 1: Load Data ---
-    images, labels = load_images_from_folders(dataset_path)
+    # Load data
+    images, labels = load_and_preprocess_images(dataset_path)
     
-    if not images:
-        print("\nError: No images were loaded. Please check your folder structure.")
-    else:
-        # --- Step 2: Extract Features ---
-        X = preprocess_and_extract_features(images)
-        y = np.array(labels)
+    if len(images) > 0:
+        # Extract features using the deep learning model
+        print("Extracting features with MobileNetV2...")
+        features = base_model.predict(images)
+        # Flatten the features from 4D to 2D
+        num_samples = features.shape[0]
+        flattened_features = features.reshape(num_samples, -1)
+        print("Feature extraction complete.")
         
-        # --- Step 3: Split Data and Train Model ---
-        print("\nSplitting data into training and testing sets...")
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+        # Split data
+        X_train, X_test, y_train, y_test = train_test_split(flattened_features, labels, test_size=0.2, random_state=42, stratify=labels)
         
-        print("\nTraining the model... (This will be very fast)")
+        # Train a simple classifier on the powerful features
+        print("Training the final classifier...")
+        # Logistic Regression is fast and works great with strong features
+        classifier = LogisticRegression(max_iter=1000, random_state=42)
+        classifier.fit(X_train, y_train)
+        print("Training complete.")
         
-        # Use the lightning-fast SGDClassifier to learn a linear SVM
-        model = SGDClassifier(loss='hinge', random_state=42)
-        
-        model.fit(X_train, y_train)
-        print("Model training complete.")
-        
-        # --- Step 4: Evaluate the Model ---
-        print("\nEvaluating the model on the test set...")
-        y_pred = model.predict(X_test)
+        # Evaluate
+        y_pred = classifier.predict(X_test)
         accuracy = accuracy_score(y_test, y_pred)
-        print(f"Accuracy: {accuracy * 100:.2f}%")
-        print("\nClassification Report:")
-        print(classification_report(y_test, y_pred))
+        print(f"\nModel Accuracy: {accuracy * 100:.2f}%")
         
-        # --- Step 5: Save the Trained Model ---
-        model_filename = 'svm_model.joblib'
-        print(f"\nSaving the trained model to '{model_filename}'...")
-        joblib.dump(model, model_filename)
+        # Save the new model
+        model_filename = 'deep_learning_model.joblib'
+        print(f"Saving new model to '{model_filename}'...")
+        joblib.dump(classifier, model_filename)
+        # We also need to save the class names
+        class_names = list(classifier.classes_)
+        joblib.dump(class_names, 'class_names.joblib')
         print("Model saved successfully!")
-        print(f"\nYou can now use the '{model_filename}' file in your application.")
